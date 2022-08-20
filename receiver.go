@@ -65,6 +65,9 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 		// ok
 	} else if request.Header.Get("X-Receiver-Token") == rs.secret {
 		// ok
+	} else {
+		http.Error(out, "nope", http.StatusForbidden)
+		return
 	}
 	out.Header()["Content-Type"] = []string{"text/plain"}
 	if request.Method != "POST" {
