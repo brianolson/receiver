@@ -20,8 +20,6 @@ import (
 //go:embed static
 var sfs embed.FS
 
-var maxSize int64 = 10_000_000
-
 const timestampFormat = "20060102_150405.999999999"
 
 func formatTemplateString(x string, when time.Time) string {
@@ -42,23 +40,6 @@ type ReceiverRecord struct {
 }
 
 type receiverServer struct {
-	// write to outdir/{timestamp}
-	// outdir string
-
-	// append to one big file instead of outdir/files
-	// appendfile string
-
-	// // access token
-	// secret string
-
-	// outPathTemplate string
-
-	// // write just the data, not cbor ReceiverRecord
-	// rawOut bool
-
-	// // only accept this "Content-Type"
-	// contentType string
-
 	configs map[string]ReceiverUnitConfig
 }
 
@@ -90,7 +71,7 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 		http.Error(out, "unacceptable content-type", 400)
 		return
 	}
-	reader := http.MaxBytesReader(out, request.Body, maxSize)
+	reader := http.MaxBytesReader(out, request.Body, cfg.MaxSize)
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		log.Printf("read body, %v", err)
@@ -123,12 +104,7 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 		}
 		fpath = cfg.AppendPath
 	} else {
-		//if rs.outPathTemplate != "" {
-			fpath = formatTemplateString(cfg.OutTemplate, time.Now())
-		// } else {
-		// 	fname := time.Now().Format(timestampFormat)
-		// 	fpath = filepath.Join(rs.outdir, fname)
-		// }
+		fpath = formatTemplateString(cfg.OutTemplate, time.Now())
 		fout, err = os.Create(fpath)
 		defer fout.Close()
 	}
@@ -156,6 +132,8 @@ func faviconHandler(out http.ResponseWriter, request *http.Request) {
 	out.Write(faviconBytes)
 }
 
+// ReceiverUnitConfig
+// e.g. {"raw": true, "secret": "hunter2", "out": "/wat/%T.jpg", "Content-Type": "image/jpeg"}
 type ReceiverUnitConfig struct {
 	// Raw write POST body out raw to a file
 	// Default writes a CBOR ReceiverRecord
@@ -178,19 +156,22 @@ type ReceiverUnitConfig struct {
 	MaxSize int64 `json:"max_ob_bytes"`
 }
 
-func (ruc *ReceiverUnitConfig) sane() (bool, error) {
+func (ruc *ReceiverUnitConfig) sane() error {
 	if ruc.Raw {
 		if ruc.OutTemplate == "" {
-			return false, errors.New("raw mode requires output template")
+			return errors.New("raw mode requires output template")
 		}
 	}
 	if ruc.Secret == "" {
-		return false, errors.New("secret must be set")
+		return errors.New("secret must be set")
 	}
 	if ruc.OutTemplate == "" && ruc.AppendPath == "" {
-		return false, errors.New("at least one of output template and append path must be set")
+		return errors.New("at least one of output template and append path must be set")
 	}
-	return true, nil
+	if ruc.MaxSize == 0 {
+		ruc.MaxSize = 10_000_00
+	}
+	return nil
 }
 
 func maybefail(err error, msg string, p ...interface{}) {
@@ -206,7 +187,6 @@ func main() {
 	var defaultReceiver ReceiverUnitConfig
 	serveAddr := flag.String("addr", ":8777", "Server Addr")
 	flag.StringVar(&defaultReceiver.Secret, "secret", "", "access token")
-	//flag.StringVar(&rs.outdir, "outdir", ".", "directory to write files to")
 	flag.StringVar(&defaultReceiver.OutTemplate, "out", "", "path template to write files to. %T gets timestamp")
 	flag.StringVar(&defaultReceiver.AppendPath, "append", "", "append to one file instead of writing files")
 	flag.Int64Var(&defaultReceiver.MaxSize, "max", 10_000_000, "maximum object to receive")
@@ -227,6 +207,12 @@ func main() {
 		rs.configs = make(map[string]ReceiverUnitConfig, 1)
 	}
 	rs.configs[""] = defaultReceiver
+	for name, cfg := range rs.configs {
+		err := cfg.sane()
+		maybefail(err, "config[%#v]: %s", name, err)
+		// write back any config cleanup
+		rs.configs[name] = cfg
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/favicon.ico", faviconHandler)
