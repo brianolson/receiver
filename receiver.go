@@ -206,7 +206,9 @@ func main() {
 	} else {
 		rs.configs = make(map[string]ReceiverUnitConfig, 1)
 	}
-	rs.configs[""] = defaultReceiver
+	if defaultReceiver.OutTemplate != "" || defaultReceiver.AppendPath != "" {
+		rs.configs[""] = defaultReceiver
+	}
 	for name, cfg := range rs.configs {
 		err := cfg.sane()
 		maybefail(err, "config[%#v]: %s", name, err)
