@@ -61,18 +61,38 @@ type receiverServer struct {
 	configs map[string]*ReceiverUnit
 }
 
+// Many ways to do it
+// ?d=configuration_name
+// /whatever/{configuration_name}/{secret}
+// Authorization: whatever {secret}
+// X-Receiver-Token: {secret}
 func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Request) {
 	request.ParseForm()
+	pathParts := strings.Split(request.URL.Path, "/")
 	configName := request.FormValue("d")
 	cfg, some := rs.configs[configName]
 	if !some {
-		http.Error(out, "nope", http.StatusNotFound)
-		return
+		for _, part := range pathParts {
+			cfg, some = rs.configs[part]
+			if some {
+				break
+			}
+		}
+		if !some {
+			http.Error(out, "nope", http.StatusNotFound)
+			return
+		}
 	}
 	var err error
+	foundSecret := false
+	for _, part := range pathParts {
+		if cfg.Secret != "" && cfg.Secret == part {
+			foundSecret = true
+		}
+	}
 	if cfg.Secret == "" {
 		// ok
-	} else if strings.Contains(request.URL.Path, cfg.Secret) {
+	} else if foundSecret {
 		// ok
 	} else if strings.Contains(request.Header.Get("Authorization"), cfg.Secret) {
 		// ok
