@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,14 +33,32 @@ func formatTemplateString(x string, when time.Time) string {
 	return strings.Join(parts, "%")
 }
 
+func formatAppendTemplateString(x string, unixSeconds int64) string {
+	// "%%" becomes "%"
+	// e.g. "%%T" -> "%T"
+	parts := strings.Split(x, "%%")
+	timestamp := strconv.FormatInt(unixSeconds, 10)
+	for i, p := range parts {
+		parts[i] = strings.ReplaceAll(p, "%T", timestamp)
+	}
+	return strings.Join(parts, "%")
+}
+
 type ReceiverRecord struct {
 	When        int64  `json:"t"`
 	Data        []byte `json:"d"`
 	ContentType string `json:"Content-Type"`
 }
 
+type ReceiverUnit struct {
+	ReceiverUnitConfig
+
+	fpath string
+	fout  io.WriteCloser
+}
+
 type receiverServer struct {
-	configs map[string]ReceiverUnitConfig
+	configs map[string]*ReceiverUnit
 }
 
 func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Request) {
@@ -100,10 +119,22 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 	if cfg.AppendPath != "" {
 		if cfg.AppendPath == "-" {
 			fout = os.Stdout
+			fpath = cfg.AppendPath
 		} else {
-			fout, err = os.OpenFile(cfg.AppendPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			nfpath := cfg.GenerateAppendPath(time.Now())
+			if nfpath == cfg.fpath {
+				fout = cfg.fout
+			} else {
+				if cfg.fout != nil {
+					cfg.fout.Close()
+					cfg.fout = nil
+				}
+				fout, err = os.OpenFile(cfg.AppendPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				cfg.fout = fout
+				cfg.fpath = nfpath
+			}
+			fpath = cfg.fpath
 		}
-		fpath = cfg.AppendPath
 	} else {
 		fpath = formatTemplateString(cfg.OutTemplate, time.Now())
 		fout, err = os.Create(fpath)
@@ -149,12 +180,33 @@ type ReceiverUnitConfig struct {
 	OutTemplate string `json:"out"`
 
 	// AppendPath receives CBOR ReceiverRecord
+	// AppendPath %T gets unix seconds base 10
+	// AppendPath %T unix seconds are clamped to modulo and offset from AppendMod and AppendOffset
+	// ```
+	// nowu := now.Unix()
+	// nowu = nowu - ((nowu + ruc.AppendOffset) % ruc.AppendMod)
+	// ```
 	AppendPath string `json:"append"`
+
+	// AppendMod if non-zero changes %T in AppendPath
+	AppendMod int64 `json:"append-mod"`
+
+	AppendOffset int64 `json:"append-offset"`
 
 	// ContentType must match HTTP POST header Content-Type
 	ContentType string `json:"Content-Type"`
 
 	MaxSize int64 `json:"max_ob_bytes"`
+}
+
+func (ruc *ReceiverUnitConfig) GenerateAppendPath(now time.Time) string {
+	nowu := now.Unix()
+	if ruc.AppendMod == 0 {
+		return formatAppendTemplateString(ruc.AppendPath, nowu)
+	}
+	remainder := (nowu + ruc.AppendOffset) % ruc.AppendMod
+	nowu = nowu - remainder
+	return formatAppendTemplateString(ruc.AppendPath, nowu)
 }
 
 func (ruc *ReceiverUnitConfig) sane() error {
@@ -185,7 +237,7 @@ func maybefail(err error, msg string, p ...interface{}) {
 
 func main() {
 	var rs receiverServer
-	var defaultReceiver ReceiverUnitConfig
+	var defaultReceiver ReceiverUnit
 	serveAddr := flag.String("addr", ":8777", "Server Addr")
 	flag.StringVar(&defaultReceiver.Secret, "secret", "", "access token")
 	flag.StringVar(&defaultReceiver.OutTemplate, "out", "", "path template to write files to. %T gets timestamp")
@@ -205,10 +257,10 @@ func main() {
 		err = dec.Decode(&rs.configs)
 		maybefail(err, "%s: bad json, %s", configPath, err)
 	} else {
-		rs.configs = make(map[string]ReceiverUnitConfig, 1)
+		rs.configs = make(map[string]*ReceiverUnit, 1)
 	}
 	if defaultReceiver.OutTemplate != "" || defaultReceiver.AppendPath != "" {
-		rs.configs[""] = defaultReceiver
+		rs.configs[""] = &defaultReceiver
 	}
 	for name, cfg := range rs.configs {
 		err := cfg.sane()
