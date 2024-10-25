@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	//	"path/filepath"
 	"strings"
 	"time"
 
@@ -55,6 +54,8 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 	if cfg.Secret == "" {
 		// ok
 	} else if strings.Contains(request.URL.Path, cfg.Secret) {
+		// ok
+	} else if strings.Contains(request.Header.Get("Authorization"), cfg.Secret) {
 		// ok
 	} else if request.Header.Get("X-Receiver-Token") == cfg.Secret {
 		// ok
