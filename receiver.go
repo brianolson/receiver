@@ -7,7 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -114,7 +114,7 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 	reader := http.MaxBytesReader(out, request.Body, cfg.MaxSize)
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		log.Printf("read body, %v", err)
+		slog.Debug("read body", "err", err)
 		http.Error(out, err.Error(), 500)
 		return
 	}
@@ -129,7 +129,7 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 		rec.ContentType = request.Header.Get("Content-Type")
 		blob, err = cbor.Dumps(rec)
 		if err != nil {
-			log.Printf("cbor d %v", err)
+			slog.Debug("cbor d", "err", err)
 			http.Error(out, err.Error(), 500)
 			return
 		}
@@ -149,7 +149,7 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 					cfg.fout.Close()
 					cfg.fout = nil
 				}
-				fout, err = os.OpenFile(cfg.AppendPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				fout, err = os.OpenFile(nfpath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 				cfg.fout = fout
 				cfg.fpath = nfpath
 			}
@@ -161,13 +161,13 @@ func (rs *receiverServer) ServeHTTP(out http.ResponseWriter, request *http.Reque
 		defer fout.Close()
 	}
 	if err != nil {
-		log.Printf("%s: open %v", fpath, err)
+		slog.Debug("open", "path", fpath, "err", err)
 		http.Error(out, err.Error(), 500)
 		return
 	}
 	_, err = fout.Write(blob)
 	if err != nil {
-		log.Printf("%s: write %v", fpath, err)
+		slog.Debug("write", "path", fpath, "err", err)
 		http.Error(out, err.Error(), 500)
 		return
 	}
@@ -258,6 +258,7 @@ func maybefail(err error, msg string, p ...interface{}) {
 func main() {
 	var rs receiverServer
 	var defaultReceiver ReceiverUnit
+	var verbose bool
 	serveAddr := flag.String("addr", ":8777", "Server Addr")
 	flag.StringVar(&defaultReceiver.Secret, "secret", "", "access token")
 	flag.StringVar(&defaultReceiver.OutTemplate, "out", "", "path template to write files to. %T gets timestamp")
@@ -265,10 +266,17 @@ func main() {
 	flag.Int64Var(&defaultReceiver.MaxSize, "max", 10_000_000, "maximum object to receive")
 	flag.BoolVar(&defaultReceiver.Raw, "raw", false, "write raw data instead of cbor ReceiverRecord")
 	flag.StringVar(&defaultReceiver.ContentType, "content-type", "", "only accept this Content-Type:")
+	flag.BoolVar(&verbose, "verbose", false, "verbose logging")
 
 	var configPath string
 	flag.StringVar(&configPath, "cfg", "", "json config file")
 	flag.Parse()
+
+	if verbose {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	} else {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	}
 
 	if configPath != "" {
 		fin, err := os.Open(configPath)
@@ -276,6 +284,7 @@ func main() {
 		dec := json.NewDecoder(fin)
 		err = dec.Decode(&rs.configs)
 		maybefail(err, "%s: bad json, %s", configPath, err)
+		slog.Debug("loaded config", "cfg", rs.configs)
 	} else {
 		rs.configs = make(map[string]*ReceiverUnit, 1)
 	}
@@ -297,6 +306,6 @@ func main() {
 		Addr:    *serveAddr,
 		Handler: mux,
 	}
-	log.Print("serving on ", *serveAddr)
-	log.Fatal(server.ListenAndServe())
+	slog.Info("serving on", "addr", *serveAddr)
+	slog.Info("exiting", "err", server.ListenAndServe())
 }
